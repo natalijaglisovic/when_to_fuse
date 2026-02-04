@@ -1,0 +1,6 @@
+Image Resolution Statistics:
+==============================
+hi_res: 2405
+large: 192
+
+Total images: 2597
