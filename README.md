@@ -72,9 +72,9 @@ We evaluate on three Amazon product review datasets:
 | Amazon Baby | Baby products |
 | Amazon Science | Science & education |
 
-Raw data is available from the [Amazon Reviews 2023](https://amazon-reviews-2023.github.io/) benchmark. Place preprocessed CSVs at `data/<dataset>/`.
+Raw data is available from the [Amazon Reviews 2023](https://amazon-reviews-2023.github.io/) benchmark. For each domain, download the per-category review file (`<Category>.jsonl`) and metadata file (`meta_<Category>.jsonl`) into `data/<dataset>/` and run them through `data/process_multimodal_data.py` (see below) to produce the CSV consumed by the rest of the pipeline.
 
-Expected CSV format: one row per user–item interaction with columns including `user_id`, `item_id`, `image_url`, and text metadata (title, description).
+Expected CSV format: one row per user–item interaction with columns including `user_id`, `item_id`, `image`, and text metadata (title, description), this is what `process_multimodal_data.py` outputs.
 
 ## Setup
 
@@ -90,16 +90,45 @@ Requires Python 3.9+ and PyTorch 1.10+. GPU recommended for training.
 
 ### 1. Preprocess data
 
+Preprocessing is a two-step pipeline:
+
+1. **`process_multimodal_data.py`** — reads the raw `<Category>.jsonl` / `meta_<Category>.jsonl` files (place them in `data/<dataset>/`), applies k-core filtering (and, for Baby, random sampling down to a target size), merges reviews with item metadata (images, text), and writes `amazon_<category>_user_item_image_text.csv`.
+2. **`data_preprocessing.py`** — turns that CSV into per-user interaction sequences, a train/test split, and item-id vocabulary, saved as pickles under `preprocessed_data/<dataset>/`.
+
+The exact k-core threshold and sampling settings used per domain (**Games: 5-core, Science: 4-core, Baby: 5-core + random sample to ~9k users / ~2k items**) are what make the reported results reproducible; every `process_multimodal_data.py` run also writes a `<output>.manifest.json` next to the CSV recording the parameters (including the random seed) actually used.
+
 ```bash
-python -m data.data_preprocessing \
-    --csv_path data/games/raw_games.csv \
-    --images_dir data/games/item_images
+# Games (5-core, no sampling)
+python -m data.process_multimodal_data \
+    --data-dir data/games \
+    --category Video_Games \
+    --min-interactions 5 \
+    --output data/games/amazon_games_user_item_image_text.csv
+
+# Science (4-core, no sampling)
+python -m data.process_multimodal_data \
+    --data-dir data/science \
+    --category Industrial_and_Scientific \
+    --min-interactions 4 \
+    --output data/science/amazon_science_user_item_image.csv
+
+# Baby (5-core, then random sample to ~9k users / ~2k items, fixed seed for reproducibility)
+python -m data.process_multimodal_data \
+    --data-dir data/baby \
+    --category Baby_Products \
+    --min-interactions 5 \
+    --target-users 9000 \
+    --target-items 2000 \
+    --sampling-strategy random \
+    --seed 42 \
+    --output data/baby/amazon_baby_products_user_item_image_text.csv
 ```
 
 ```bash
-python -m data.process_multimodal_data \
-    --csv_path data/games/raw_games.csv
+python -m data.data_preprocessing
 ```
+
+`data_preprocessing.py`'s `__main__` iterates over the three domains (with paths and k-core values matching the commands above) and writes each domain's preprocessed pickles to `preprocessed_data/<dataset>/`.
 
 ### 2. Extract multimodal embeddings
 
