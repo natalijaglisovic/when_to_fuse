@@ -67,7 +67,7 @@ class BERT4RecLateFusionAttentionDataset(Dataset):
 
 
 def load_and_process_data(csv_path, user_col=None, item_col=None,
-                         test_ratio=0.2, num_users=None):
+                         num_users=None):
     """Load and process CSV data"""
     print(f"Loading data from {csv_path}...")
 
@@ -126,30 +126,36 @@ def load_and_process_data(csv_path, user_col=None, item_col=None,
     interaction_lengths = [len(seq) for seq in user_sequences.values()]
     avg_interaction_length = np.mean(interaction_lengths) if interaction_lengths else 0
 
+    # Leave-one-out split: most recent item = test, second-most-recent = validation,
+    # remaining prefix = training. Val is evaluated against the train-only prefix;
+    # test is evaluated against train+val history (so the val item is visible as context).
     train_sequences = []
+    val_data = []
     test_data = []
 
     for user_id, sequence in user_sequences.items():
-        if len(sequence) < 2:
+        if len(sequence) < 3:
             continue
 
-        split_point = max(1, int(len(sequence) * (1 - test_ratio)))
-        train_seq = sequence[:split_point]
-        test_item = sequence[split_point] if split_point < len(sequence) else sequence[-1]
+        train_seq = sequence[:-2]
+        val_item = sequence[-2]
+        test_item = sequence[-1]
 
-        if len(train_seq) > 0:
-            train_sequences.append(train_seq)
-            test_data.append((train_seq, test_item))
+        train_sequences.append(train_seq)
+        val_data.append((train_seq, val_item))
+        test_data.append((sequence[:-1], test_item))
 
     print(f"Data processing complete:")
     print(f"  Users: {len(unique_users)}")
     print(f"  Items: {len(unique_items)}")
     print(f"  Average interaction length: {avg_interaction_length:.2f}")
     print(f"  Train sequences: {len(train_sequences)}")
+    print(f"  Val sequences: {len(val_data)}")
     print(f"  Test sequences: {len(test_data)}")
 
     return {
         'train_sequences': train_sequences,
+        'val_data': val_data,
         'test_data': test_data,
         'num_users': len(unique_users),
         'num_items': len(unique_items),
@@ -160,7 +166,7 @@ def load_and_process_data(csv_path, user_col=None, item_col=None,
     }
 
 
-def train_model(model, train_loader, test_data, num_epochs, learning_rate, device, save_dir=None):
+def train_model(model, train_loader, val_data, num_epochs, learning_rate, device, save_dir=None):
     """Train the BERT4Rec model with attention-based late fusion"""
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -211,9 +217,9 @@ def train_model(model, train_loader, test_data, num_epochs, learning_rate, devic
         print(f"Epoch {epoch+1} - Loss: {avg_loss:.4f}, Mode: late_{model.fusion_mode}")
 
         if (epoch + 1) % 5 == 0 or epoch == 0:
-            print("Evaluating...")
-            metrics = evaluate_model(model, test_data, device)
-            print(f"HR@10: {metrics['HR@10']:.4f}, NDCG@10: {metrics['NDCG@10']:.4f}")
+            print("Evaluating on validation set...")
+            metrics = evaluate_model(model, val_data, device)
+            print(f"Val HR@10: {metrics['HR@10']:.4f}, Val NDCG@10: {metrics['NDCG@10']:.4f}")
 
     return model, epoch_losses
 
@@ -384,8 +390,6 @@ def main():
                         help='Number of epochs (default: 20)')
     parser.add_argument('--learning_rate', type=float, default=0.005,
                         help='Learning rate (default: 0.005)')
-    parser.add_argument('--test_ratio', type=float, default=0.2,
-                        help='Test set ratio (default: 0.2)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed (default: 42)')
     parser.add_argument('--device', type=str, default='auto',
@@ -413,7 +417,6 @@ def main():
         csv_path=args.data_path,
         user_col=args.user_col,
         item_col=args.item_col,
-        test_ratio=args.test_ratio,
         num_users=args.num_users
     )
 
@@ -478,7 +481,7 @@ def main():
     trained_model, epoch_losses = train_model(
         model=model,
         train_loader=train_loader,
-        test_data=data['test_data'],
+        val_data=data['val_data'],
         num_epochs=args.num_epochs,
         learning_rate=args.learning_rate,
         device=device,

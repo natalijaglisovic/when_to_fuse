@@ -63,7 +63,7 @@ class BERT4RecDatasetWrapper(Dataset):
 
 
 def load_and_process_data(csv_path, user_col=None, item_col=None,
-                          test_ratio=0.2, num_users=None):
+                          num_users=None):
     df = pd.read_csv(csv_path)
     print(f"Data shape: {df.shape}, Columns: {df.columns.tolist()}")
 
@@ -104,21 +104,23 @@ def load_and_process_data(csv_path, user_col=None, item_col=None,
     for _, row in df.iterrows():
         user_sequences[row['user_idx']].append(row['item_idx'])
 
-    train_sequences, test_data = [], []
+    train_sequences, val_data, test_data = [], [], []
     for user_id, seq in user_sequences.items():
-        if len(seq) < 2:
+        if len(seq) < 3:
             continue
-        split = max(1, int(len(seq) * (1 - test_ratio)))
-        train_seq = seq[:split]
-        test_item = seq[split] if split < len(seq) else seq[-1]
+        train_seq = seq[:-2]
+        val_item = seq[-2]
+        test_item = seq[-1]
         train_sequences.append(train_seq)
-        test_data.append((train_seq, test_item))
+        val_data.append((train_seq, val_item))
+        test_data.append((seq[:-1], test_item))
 
     print(f"Users: {len(unique_users)}, Items: {len(unique_items)}, "
-          f"Train: {len(train_sequences)}, Test: {len(test_data)}")
+          f"Train: {len(train_sequences)}, Val: {len(val_data)}, Test: {len(test_data)}")
 
     return {
         'train_sequences': train_sequences,
+        'val_data': val_data,
         'test_data': test_data,
         'num_items': len(unique_items),
         'item_to_id': item_to_id,
@@ -296,7 +298,6 @@ def main():
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_epochs', type=int, default=1)
     parser.add_argument('--learning_rate', type=float, default=0.005)
-    parser.add_argument('--test_ratio', type=float, default=0.2)
     parser.add_argument('--device', type=str, default='auto')
     parser.add_argument('--freeze_text_embeddings', action='store_true')
     parser.add_argument('--freeze_image_embeddings', action='store_true')
@@ -328,7 +329,6 @@ def main():
         csv_path=args.data_path,
         user_col=args.user_col,
         item_col=args.item_col,
-        test_ratio=args.test_ratio,
         num_users=args.num_users
     )
 

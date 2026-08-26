@@ -81,28 +81,33 @@ class RecommenderDataPreprocessor:
         print(f"Created text DataFrame with {len(df)} rows, {df['itemid'].nunique()} unique items, {df['userid'].nunique()} unique users")
         return df
 
-    def create_train_test_split(self, user_sequences: Dict[str, List[str]],
-                               test_size: float = 0.2) -> Tuple[Dict, Dict]:
-        """Create train/test split using leave-k-out strategy"""
-        print("Creating train/test split...")
+    def create_train_test_split(self, user_sequences: Dict[str, List[str]]) -> Tuple[Dict, Dict, Dict]:
+        """Create train/val/test split using leave-one-out: the most recently interacted
+        item is held out as the test item, the second most recent as the validation item,
+        and the remaining prefix is used for training. Matches the split used in
+        model/*/train_*.py (val is evaluated against train-only history; test is evaluated
+        against train+val history, i.e. items[:-1])."""
+        print("Creating train/val/test split (leave-one-out)...")
 
         train_sequences = {}
+        val_sequences = {}
         test_sequences = {}
 
         for user_id, items in user_sequences.items():
-            if len(items) < 2:
+            if len(items) < 3:
                 continue
-            test_items_count = max(1, int(len(items) * test_size))
-            test_items_count = min(test_items_count, len(items) - 1)
-            train_sequences[user_id] = items[:-test_items_count]
-            test_sequences[user_id] = items[-test_items_count:]
+            train_sequences[user_id] = items[:-2]
+            val_sequences[user_id] = [items[-2]]
+            test_sequences[user_id] = [items[-1]]
 
         print(f"Train sequences: {len(train_sequences)} users")
+        print(f"Val sequences: {len(val_sequences)} users")
         print(f"Test sequences: {len(test_sequences)} users")
-        return train_sequences, test_sequences
+        return train_sequences, val_sequences, test_sequences
 
     def save_preprocessed_data(self, user_sequences: Dict, train_sequences: Dict,
-                               test_sequences: Dict, text_df: pd.DataFrame = None,
+                               val_sequences: Dict, test_sequences: Dict,
+                               text_df: pd.DataFrame = None,
                                output_dir: str = "preprocessed_data"):
         """Save all preprocessed data"""
         output_path = Path(output_dir)
@@ -112,6 +117,8 @@ class RecommenderDataPreprocessor:
             pickle.dump(user_sequences, f)
         with open(output_path / "train_sequences.pkl", 'wb') as f:
             pickle.dump(train_sequences, f)
+        with open(output_path / "val_sequences.pkl", 'wb') as f:
+            pickle.dump(val_sequences, f)
         with open(output_path / "test_sequences.pkl", 'wb') as f:
             pickle.dump(test_sequences, f)
 
@@ -153,7 +160,7 @@ class RecommenderDataPreprocessor:
         df = self.load_and_parse_data()
         df = self.apply_k_core_filter(df, k=k)
         user_sequences = self.create_user_sequences(df)
-        train_sequences, test_sequences = self.create_train_test_split(user_sequences)
+        train_sequences, val_sequences, test_sequences = self.create_train_test_split(user_sequences)
 
         text_df = self.create_text_dataframe(jsonl_path)
         valid_users = set(df['user_id'])
@@ -164,9 +171,9 @@ class RecommenderDataPreprocessor:
         text_df['review_id'] = range(len(text_df))
         print(f"After filtering to interaction users/items: {len(text_df)} reviews")
 
-        self.save_preprocessed_data(user_sequences, train_sequences, test_sequences, text_df, output_dir)
+        self.save_preprocessed_data(user_sequences, train_sequences, val_sequences, test_sequences, text_df, output_dir)
 
-        return user_sequences, train_sequences, test_sequences, text_df
+        return user_sequences, train_sequences, val_sequences, test_sequences, text_df
 
 
 if __name__ == "__main__":
@@ -183,7 +190,7 @@ if __name__ == "__main__":
     for domain, (csv_path, jsonl_path, k) in DOMAINS.items():
         print(f"\n{'='*60}\nDomain: {domain}\n{'='*60}")
         preprocessor = RecommenderDataPreprocessor(csv_path=csv_path)
-        user_sequences, train_seq, test_seq, text_df = preprocessor.run_full_preprocessing(
+        user_sequences, train_seq, val_seq, test_seq, text_df = preprocessor.run_full_preprocessing(
             jsonl_path=jsonl_path,
             output_dir=f"preprocessed_data/{domain}",
             k=k,
