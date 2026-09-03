@@ -190,7 +190,7 @@ def load_and_process_data(csv_path, user_col=None, item_col=None,
 
 def train_model(model, train_loader, test_data, val_data, num_epochs, learning_rate, device,
                 attribution_method='gradient_norm', attribution_freq=5,
-                num_attribution_samples=100, save_dir=None):
+                num_attribution_samples=100, save_dir=None, num_neg=99):
     """Train the BERT4Rec intermediate fusion model with gradient attribution analysis"""
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -283,31 +283,43 @@ def train_model(model, train_loader, test_data, val_data, num_epochs, learning_r
                     print(f"  Proportions sum to {total_prop:.4f} (expected ~1.0)")
 
         # Evaluate every 5 epochs
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print("Evaluating on validation set...")
-            metrics = evaluate_model(model, val_data, device)
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            print("Evaluating on validation set (sampled negatives)...")
+            metrics = evaluate_model(model, val_data, device, num_neg=num_neg, full_catalog=False)
             print(f"Val HR@10: {metrics['HR@10']:.4f}, Val NDCG@10: {metrics['NDCG@10']:.4f}")
 
     return model, attribution_history
 
 
-def evaluate_model(model, test_data, device, num_neg=99, k=[5, 10, 20]):
-    """Evaluate model performance"""
+def evaluate_model(model, test_data, device, num_neg=99, k=[5, 10, 20], full_catalog=True):
+    """Evaluate ranking performance (HR@K, NDCG@K).
+
+    full_catalog=True  -> rank the held-out target against the whole item
+                          catalog, excluding items already in the user's history
+                          (num_neg is ignored).
+    full_catalog=False -> rank the target against num_neg sampled negatives.
+    """
     model.eval()
 
     ndcg_sums = {ki: 0 for ki in k}
     hr_sums = {ki: 0 for ki in k}
     num_users = 0
 
+    all_items = list(range(1, model.item_num + 1))
+
     with torch.no_grad():
         eval_bar = tqdm(test_data, desc="Evaluating")
         for user_seq, target_item in eval_bar:
-            candidates = [target_item]
-
-            while len(candidates) <= num_neg:
-                neg_item = random.randint(1, model.item_num)
-                if neg_item != target_item and neg_item not in user_seq:
-                    candidates.append(neg_item)
+            if full_catalog:
+                seen = set(user_seq)
+                candidates = [target_item] + [it for it in all_items
+                                              if it != target_item and it not in seen]
+            else:
+                candidates = [target_item]
+                while len(candidates) <= num_neg:
+                    neg_item = random.randint(1, model.item_num)
+                    if neg_item != target_item and neg_item not in user_seq:
+                        candidates.append(neg_item)
 
             if len(user_seq) > model.max_seq_len:
                 user_seq = user_seq[-model.max_seq_len:]
@@ -320,7 +332,8 @@ def evaluate_model(model, test_data, device, num_neg=99, k=[5, 10, 20]):
             scores = model.predict(sequences, candidates_tensor)
             scores = scores.cpu().numpy()[0]
 
-            rank = np.argsort(-scores)[0]
+            # 0-indexed rank of the held-out target (candidate 0); ties favour the target
+            rank = int(np.sum(scores > scores[0]))
 
             for ki in k:
                 if rank < ki:
@@ -567,10 +580,12 @@ def compare_all_fusion_modes(args, data, text_embedding_matrix, image_embedding_
             device=device,
             attribution_method=args.attribution_method,
             attribution_freq=args.num_epochs + 1,  # Only at end
-            num_attribution_samples=args.num_attribution_samples
+            num_attribution_samples=args.num_attribution_samples,
+            num_neg=args.num_neg
         )
 
-        metrics = evaluate_model(model, data['test_data'], device)
+        metrics = evaluate_model(model, data['test_data'], device,
+                                 num_neg=args.num_neg, full_catalog=(args.eval_mode == 'full'))
         all_metrics[fusion_mode] = metrics
 
         attr_results = model.compute_attribution_batch(
@@ -700,6 +715,14 @@ def main():
     parser.add_argument('--compare_fusion_modes', action='store_true',
                         help='Train and compare all fusion modes (add, concat, attention)')
 
+    parser.add_argument('--eval_mode', type=str, default='full', choices=['full', 'sampled'],
+                        help="Final-evaluation ranking mode: 'full' ranks the held-out target "
+                             "against the whole catalog (minus items already seen by the user); "
+                             "'sampled' ranks against --num_neg sampled negatives (default: full)")
+    parser.add_argument('--num_neg', type=int, default=99,
+                        help='Number of sampled negatives, used for --eval_mode sampled and for '
+                             'the in-training validation checks (default: 99)')
+
     args = parser.parse_args()
 
     set_random_seeds(args.seed)
@@ -803,12 +826,15 @@ def main():
             attribution_method=args.attribution_method,
             attribution_freq=args.attribution_freq,
             num_attribution_samples=args.num_attribution_samples,
-            save_dir=args.save_dir
+            save_dir=args.save_dir,
+            num_neg=args.num_neg
         )
 
     # Final evaluation
     print("\nFinal evaluation...")
-    final_metrics = evaluate_model(model, data['test_data'], device)
+    final_metrics = evaluate_model(model, data['test_data'], device,
+                                   num_neg=args.num_neg,
+                                   full_catalog=(args.eval_mode == 'full'))
 
     print(f"\nFinal Results for {args.dataset_name} (Intermediate Fusion - {args.fusion_mode}):")
     print(f"  Fusion Mode: intermediate_{args.fusion_mode}")

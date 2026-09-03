@@ -180,7 +180,7 @@ def load_and_process_data(csv_path, user_col=None, item_col=None,
 
 
 def train_model(model, train_loader, val_data, num_epochs, learning_rate, device,
-                svd_analysis_freq=5, save_dir=None):
+                svd_analysis_freq=5, save_dir=None, num_neg=99):
     """
     Train the BERT4Rec model with attention-based fusion and periodic SVD analysis.
 
@@ -246,9 +246,9 @@ def train_model(model, train_loader, val_data, num_epochs, learning_rate, device
         print(f"\nEpoch {epoch+1} - Loss: {avg_loss:.4f}, Mode: Attention+SVD")
 
         # Evaluation
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print("Evaluating on validation set...")
-            metrics = evaluate_model(model, val_data, device)
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            print("Evaluating on validation set (sampled negatives)...")
+            metrics = evaluate_model(model, val_data, device, num_neg=num_neg, full_catalog=False)
             print(f"Val HR@10: {metrics['HR@10']:.4f}, Val NDCG@10: {metrics['NDCG@10']:.4f}")
 
         # SVD Analysis
@@ -330,23 +330,35 @@ def train_model(model, train_loader, val_data, num_epochs, learning_rate, device
     return model
 
 
-def evaluate_model(model, test_data, device, num_neg=99, k=[5, 10, 20]):
-    """Evaluate model performance"""
+def evaluate_model(model, test_data, device, num_neg=99, k=[5, 10, 20], full_catalog=True):
+    """Evaluate ranking performance (HR@K, NDCG@K).
+
+    full_catalog=True  -> rank the held-out target against the whole item
+                          catalog, excluding items already in the user's history
+                          (num_neg is ignored).
+    full_catalog=False -> rank the target against num_neg sampled negatives.
+    """
     model.eval()
 
     ndcg_sums = {ki: 0 for ki in k}
     hr_sums = {ki: 0 for ki in k}
     num_users = 0
 
+    all_items = list(range(1, model.item_num + 1))
+
     with torch.no_grad():
         eval_bar = tqdm(test_data, desc="Evaluating")
         for user_seq, target_item in eval_bar:
-            candidates = [target_item]
-
-            while len(candidates) <= num_neg:
-                neg_item = random.randint(1, model.item_num)
-                if neg_item != target_item and neg_item not in user_seq:
-                    candidates.append(neg_item)
+            if full_catalog:
+                seen = set(user_seq)
+                candidates = [target_item] + [it for it in all_items
+                                              if it != target_item and it not in seen]
+            else:
+                candidates = [target_item]
+                while len(candidates) <= num_neg:
+                    neg_item = random.randint(1, model.item_num)
+                    if neg_item != target_item and neg_item not in user_seq:
+                        candidates.append(neg_item)
 
             if len(user_seq) > model.max_seq_len:
                 user_seq = user_seq[-model.max_seq_len:]
@@ -359,7 +371,8 @@ def evaluate_model(model, test_data, device, num_neg=99, k=[5, 10, 20]):
             scores = model.predict(sequences, candidates_tensor)
             scores = scores.cpu().numpy()[0]
 
-            rank = np.argsort(-scores)[0]
+            # 0-indexed rank of the held-out target (candidate 0); ties favour the target
+            rank = int(np.sum(scores > scores[0]))
 
             for ki in k:
                 if rank < ki:
@@ -424,6 +437,13 @@ def main():
                         help='Frequency (in epochs) to perform SVD analysis (default: 5)')
     parser.add_argument('--save_dir', type=str, default=None,
                         help='Directory to save model checkpoints and SVD analysis')
+    parser.add_argument('--eval_mode', type=str, default='full', choices=['full', 'sampled'],
+                        help="Final-evaluation ranking mode: 'full' ranks the held-out target "
+                             "against the whole catalog (minus items already seen by the user); "
+                             "'sampled' ranks against --num_neg sampled negatives (default: full)")
+    parser.add_argument('--num_neg', type=int, default=99,
+                        help='Number of sampled negatives, used for --eval_mode sampled and for '
+                             'the in-training validation checks (default: 99)')
 
     args = parser.parse_args()
 
@@ -508,11 +528,14 @@ def main():
         learning_rate=args.learning_rate,
         device=device,
         svd_analysis_freq=args.svd_analysis_freq,
-        save_dir=args.save_dir
+        save_dir=args.save_dir,
+        num_neg=args.num_neg
     )
 
-    print("\nFinal evaluation...")
-    final_metrics = evaluate_model(trained_model, data['test_data'], device)
+    print(f"\nFinal evaluation ({args.eval_mode}-catalog ranking)...")
+    final_metrics = evaluate_model(trained_model, data['test_data'], device,
+                                   num_neg=args.num_neg,
+                                   full_catalog=(args.eval_mode == 'full'))
 
     print(f"\nFinal Results for {args.dataset_name}:")
     print(f"  HR@5: {final_metrics['HR@5']:.4f}")

@@ -220,16 +220,31 @@ def pregenerate_eval_candidates(test_data, num_items, num_neg=99, seed=123):
 
 
 def evaluate_model(model, test_data, eval_candidates, device, k_values=[5, 10, 20]):
+    """Rank the held-out target with HR@K / NDCG@K.
+
+    eval_candidates=None -> full-catalog ranking (target vs. every item not in
+    the user's history). Otherwise rank against the supplied sampled candidates.
+    """
     model.eval()
     hr_sums = {ki: 0 for ki in k_values}
     ndcg_sums = {ki: 0 for ki in k_values}
     num_users = 0
+
+    full_catalog = eval_candidates is None
+    all_items = list(range(1, model.item_num + 1)) if full_catalog else None
+    if full_catalog:
+        eval_candidates = [None] * len(test_data)
 
     with torch.no_grad():
         for (user_seq, target_item), candidates in tqdm(
             zip(test_data, eval_candidates), total=len(test_data),
             desc="Evaluating", leave=False
         ):
+            if full_catalog:
+                seen = set(user_seq)
+                candidates = [target_item] + [it for it in all_items
+                                              if it != target_item and it not in seen]
+
             seq = user_seq[-model.max_seq_len:]
             padded = seq + [0] * (model.max_seq_len - len(seq))
 
@@ -237,7 +252,8 @@ def evaluate_model(model, test_data, eval_candidates, device, k_values=[5, 10, 2
             candidates_t = torch.tensor([candidates], dtype=torch.long, device=device)
             scores = model.predict(sequences, candidates_t).cpu().numpy()[0]
 
-            rank = np.argsort(-scores)[0]
+            # 0-indexed rank of the held-out target (candidate 0); ties favour the target
+            rank = int(np.sum(scores > scores[0]))
             for ki in k_values:
                 if rank < ki:
                     hr_sums[ki] += 1
@@ -316,6 +332,12 @@ def main():
                         help='Comma-separated missing percentages (default: 10,20,...,90)')
     parser.add_argument('--fusion_methods', type=str, default='concat,add,attention',
                         help='Comma-separated fusion methods (default: concat,add,attention)')
+    parser.add_argument('--eval_mode', type=str, default='full', choices=['full', 'sampled'],
+                        help="Ranking mode: 'full' ranks the held-out target against the whole "
+                             "catalog (minus items already seen by the user); 'sampled' ranks "
+                             "against --num_neg sampled negatives (default: full)")
+    parser.add_argument('--num_neg', type=int, default=99,
+                        help='Number of sampled negatives when --eval_mode sampled (default: 99)')
     args = parser.parse_args()
 
     if args.device == 'auto':
@@ -363,11 +385,15 @@ def main():
     print(f"Image embedding matrix shape: {image_matrix_orig.shape}")
 
     # Pre-generate evaluation candidates ONCE so all experiments use the same negatives
-    print("\nPre-generating evaluation candidates...")
-    eval_candidates = pregenerate_eval_candidates(
-        data['test_data'], data['num_items'], num_neg=99, seed=123
-    )
-    print(f"Generated candidates for {len(eval_candidates)} test users")
+    if args.eval_mode == 'full':
+        print("\nUsing full-catalog ranking (no sampled negatives)")
+        eval_candidates = None
+    else:
+        print("\nPre-generating evaluation candidates...")
+        eval_candidates = pregenerate_eval_candidates(
+            data['test_data'], data['num_items'], num_neg=args.num_neg, seed=123
+        )
+        print(f"Generated candidates for {len(eval_candidates)} test users")
 
     # Results storage: {fusion_method: {missing_pct: [hr@20 for each run]}}
     results = {fm: {pct: [] for pct in missing_pcts} for fm in fusion_methods}
