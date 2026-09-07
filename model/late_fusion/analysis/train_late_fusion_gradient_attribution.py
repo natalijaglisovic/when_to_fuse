@@ -681,8 +681,8 @@ def main():
                         help='Masking probability (default: 0.224)')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size (default: 256)')
-    parser.add_argument('--num_epochs', type=int, default=20,
-                        help='Number of epochs (default: 20)')
+    parser.add_argument('--num_epochs', type=int, default=50,
+                        help='Number of epochs (default: 50)')
     parser.add_argument('--learning_rate', type=float, default=0.005,
                         help='Learning rate (default: 0.01)')
     parser.add_argument('--seed', type=int, default=42,

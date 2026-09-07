@@ -319,7 +319,7 @@ def main():
     parser.add_argument('--dropout_rate', type=float, default=0.206)
     parser.add_argument('--mask_prob', type=float, default=0.149)
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--num_epochs', type=int, default=5)
+    parser.add_argument('--num_epochs', type=int, default=50)
     parser.add_argument('--learning_rate', type=float, default=0.005)
     parser.add_argument('--device', type=str, default='auto')
     parser.add_argument('--freeze_text_embeddings', action='store_true')
