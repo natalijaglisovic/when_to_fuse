@@ -291,23 +291,15 @@ class BERT4RecIntermediateFusionGradientAttribution(nn.Module):
             batch_indices = torch.arange(batch_size, device=input_ids.device)
             last_hidden = hidden_states[batch_indices, last_positions]
 
-            # Get target embedding (fused through pre-fusion encoders)
-            target_ids = torch.tensor([[target_item]], device=input_ids.device).expand(batch_size, 1)
-            target_id_emb = self.item_id_embedding(target_ids)
-            target_text_emb = self.text_embedding(target_ids)
-            target_image_emb = self.image_embedding(target_ids)
+            # Project the final hidden state through the untied output layer to get
+            # full logits over the item catalog (same projection used at train/inference time).
+            logits = self.output_layer(last_hidden)  # (batch_size, item_num)
 
-            attention_mask_target = torch.ones(batch_size, 1, device=input_ids.device).long()
-            target_id_hidden = self.id_encoder(target_id_emb, attention_mask_target)
-            target_text_hidden = self.text_encoder(target_text_emb, attention_mask_target)
-            target_image_hidden = self.image_encoder(target_image_emb, attention_mask_target)
-
-            target_emb = self.fuse_representations(target_id_hidden, target_text_hidden, target_image_hidden).squeeze(1)
-
-            # Normalize and compute cosine similarity (bounded [-1, 1] for stable gradients)
-            last_hidden_norm = F.normalize(last_hidden, p=2, dim=-1)
-            target_emb_norm = F.normalize(target_emb, p=2, dim=-1)
-            score = (last_hidden_norm * target_emb_norm).sum()
+            # Select the logit for the true next item as the scalar to backpropagate from.
+            # Apply the -1 offset used elsewhere (label construction, candidate scoring):
+            # output_layer is 0-indexed over item_num, while target_item lives in the
+            # ID-embedding vocab space (1-indexed, with pad/mask offsets).
+            score = logits[:, target_item - 1].sum()
 
             # Backpropagate
             score.backward()

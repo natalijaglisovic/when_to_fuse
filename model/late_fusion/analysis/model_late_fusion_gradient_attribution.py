@@ -282,16 +282,15 @@ class BERT4RecLateFusionGradientAttribution(nn.Module):
         batch_indices = torch.arange(batch_size, device=input_ids.device)
         last_hidden = hidden_states[batch_indices, last_positions]
 
-        # Get target embedding (fused)
-        target_ids = torch.tensor([[target_item]], device=input_ids.device).expand(batch_size, 1)
-        target_emb = self.get_fused_target_embeddings(target_ids).squeeze(1)
+        # Project the final hidden state through the untied output layer to get
+        # full logits over the item catalog (same projection used at train/inference time).
+        logits = self.output_layer(last_hidden)  # (batch_size, item_num)
 
-        # Normalize embeddings for numerical stability
-        last_hidden_norm = F.normalize(last_hidden, p=2, dim=-1)
-        target_emb_norm = F.normalize(target_emb, p=2, dim=-1)
-
-        # Compute cosine similarity score
-        score = (last_hidden_norm * target_emb_norm).sum()
+        # Select the logit for the true next item as the scalar to backpropagate from.
+        # Apply the -1 offset used elsewhere (label construction, candidate scoring):
+        # output_layer is 0-indexed over item_num, while target_item lives in the
+        # ID-embedding vocab space (1-indexed, with pad/mask offsets).
+        score = logits[:, target_item - 1].sum()
 
         # Backpropagate
         score.backward()
