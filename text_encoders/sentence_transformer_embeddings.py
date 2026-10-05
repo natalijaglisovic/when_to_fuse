@@ -12,7 +12,7 @@ import gc
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
-MODEL_NAME = "all-MiniLM-L6-v2"  # Fast and efficient sentence transformer model
+MODEL_NAME = "all-mpnet-base-v2"
 BATCH_SIZE = 32  # Process multiple texts at once for efficiency
 
 
